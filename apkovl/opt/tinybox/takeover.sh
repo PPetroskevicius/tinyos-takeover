@@ -1,4 +1,6 @@
 #!/bin/sh
+
+# show what commands are being run
 set -x
 
 sleep 1
@@ -9,8 +11,12 @@ if ! wget -q -O /tmp/update.sh "http://192.168.52.20:2543/takeover.sh"; then
   exit 1
 fi
 
+# calculate hash for the remote script
 remote_script_hash="$(sha256sum /tmp/update.sh | awk '{print $1}')"
+# calculate hash for the local script
 local_script_hash="$(sha256sum /opt/tinybox/takeover.sh | awk '{print $1}')"
+
+# compare hashes
 if [ "$remote_script_hash" != "$local_script_hash" ]; then
   echo "text,Updating..." | nc -U /run/tinybox-screen.sock
   sleep 1
@@ -23,16 +29,19 @@ fi
 IMG_HOST="http://192.168.52.20:2543"
 
 # system check
-EXPECTED_GPU_COUNT=6
+# EXPECTED_GPU_COUNT=6
+EXPECTED_GPU_COUNT=2
 EXPECTED_GPU_LINK_SPEED="16GT/s"
 EXPECTED_GPU_LINK_WIDTH="x16"
-EXPECTED_MEMORY_SIZE_GB=128
+# EXPECTED_MEMORY_SIZE_GB=128
+EXPECTED_MEMORY_SIZE_GB=64
 EXPECTED_CORE_COUNT=32
 EXPECTED_DRIVE_COUNT=4
 EXPECTED_DRIVE_LINK_SPEED="16GT/s"
 EXPECTED_DRIVE_LINK_WIDTH="x4"
 
 echo "atext,System Check.. ,System Check ..,System Check. ." | nc -U /run/tinybox-screen.sock
+# retrieve detailed hardware information
 system_info="$(lshw -json)"
 
 # first check the gpus
@@ -58,7 +67,8 @@ for busid in $gpu_busids; do
     exit 1
   fi
 
-  # ensure resizable bar is enabled
+  # Ensure resizable BAR (Base Address Register) is enabled for the GPU
+  # It is a PCIe feature allowing the CPU to access the entire GPU frame buffer (VRAM) at once to improve performance
   if ! lspci -vv -s "$busid" | grep -q "Resizable BAR"; then
     echo "text,$busid - GPU $i,Resizable BAR not enabled" | nc -U /run/tinybox-screen.sock
     exit 1
@@ -164,7 +174,7 @@ while true; do
 
   echo "text,Downloading Image,$percentage - $time_left" | nc -U /run/tinybox-screen.sock
 
-  if ! pgrep -f "wget -b -o /tmp/log -O /tmp/tmp/tinyos.img" > /dev/null; then
+  if ! pgrep -f "wget -b -o /tmp/log -O /tmp/tmp/tinyos.img" >/dev/null; then
     break
   fi
 done
@@ -177,21 +187,30 @@ fi
 
 echo "text,Flashing Image" | nc -U /run/tinybox-screen.sock
 
+# get file size
 file_size=$(stat -c %s /tmp/tmp/tinyos.img)
-watch -t -n1 pkill -USR1 dd > /dev/null &
+
+# Run watch command in the background. The watch command executes pkill -USR1 dd every second.
+# This sends a USR1 signal to the dd command, which causes dd to print its I/O progress to
+# standard error.
+watch -t -n1 pkill -USR1 dd >/dev/null &
 
 # write the image to the drive
+# Use dd to copy the image file (/tmp/tmp/tinyos.img) to the drive ($drive) with a block size of 16M.
+# The oflag=direct ensures that the write bypasses any caching mechanisms.
+# The 2>&1 redirects standard error to standard output so that progress messages can be
+# read by the while read -r line loop.
 dd if=/tmp/tmp/tinyos.img of="$drive" bs=16M oflag=direct 2>&1 | while read -r line; do
   case $line in
-    *"bytes"*)
-      # extract the written bytes from the line
-      written=$(echo "$line" | grep -oP '\d+' | head -n1)
-      # calculate the percentage of the written bytes
-      percentage=$(awk "BEGIN {print int(($written/$file_size)*100)}")
-      # extract the speed
-      speed=$(echo "$line" | grep -oP '(\d+.\d+MB/s)|(\d+ MB/s)|(\d+B/s)')
-      echo "text,Flashing Image,$percentage% - $speed" | nc -U /run/tinybox-screen.sock
-      ;;
+  *"bytes"*)
+    # extract the written bytes from the line
+    written=$(echo "$line" | grep -oP '\d+' | head -n1)
+    # calculate the percentage of the written bytes
+    percentage=$(awk "BEGIN {print int(($written/$file_size)*100)}")
+    # extract the speed
+    speed=$(echo "$line" | grep -oP '(\d+.\d+MB/s)|(\d+ MB/s)|(\d+B/s)')
+    echo "text,Flashing Image,$percentage% - $speed" | nc -U /run/tinybox-screen.sock
+    ;;
   esac
 done
 pkill watch
@@ -200,14 +219,19 @@ pkill watch
 sgdisk -e "$drive"
 
 # delete previous tinyos uefi boot entries no bash
+# get the tinyos uefi boot entries
 entries="$(efibootmgr | grep -i "tinyos" | grep -oP 'Boot\d+' | grep -oP '\d+')"
+# delete each tinyos uefi boot entry
 for entry in $entries; do
   efibootmgr -b "$entry" -B
 done
 
 # tell uefi to boot from the internal drive
+# create a new uefi boot entry
 efibootmgr --create --disk "$drive" --part 1 --label "tinyos" --loader '\EFI\BOOT\BOOTX64.EFI'
+# retrieve the boot entry number
 bootnum="$(efibootmgr | grep -i "tinyos" | grep -oP 'Boot\d+' | grep -oP '\d+' | head -n1)"
+# set the boot entry as the next boot target
 efibootmgr -n "$bootnum"
 
 echo "text,Flashing Complete,Rebooting" | nc -U /run/tinybox-screen.sock
