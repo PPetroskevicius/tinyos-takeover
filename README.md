@@ -22,6 +22,14 @@ make iso
 
 to build an iso that can be loaded over the BMC.
 
+Put the `tinyos.red.img` image to allow download over the http:
+
+```bash
+cp tinyos/result/tinyos.red.img /home/user/images/
+cd /home/user/images/
+python3 -m http.server 8000
+```
+
 ## Contents
 
 ```
